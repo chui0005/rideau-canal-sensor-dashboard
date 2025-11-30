@@ -92,12 +92,13 @@ COSMOS_CONTAINER=rideaucanaldata
 ### Safety Status Indicators
   - Visual indicators based on ice thickness thresholds
 
-## AI use: 
+
+## AI Tools Used
+- **Tool:** ChatGPT
+- **Purpose and extent:** 
   - Make changes to server code to pull in data from cosmos.
   - Change CSS
   - Create API Documentation
-
-
   
 ## Troubleshooting
 
