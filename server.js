@@ -1,6 +1,6 @@
 /**
- * Rideau Canal Monitoring Dashboard - Backend Server (CORRECTED)
- * Serves the dashboard and provides API endpoints for real-time data
+ * Rideau Canal Monitoring Dashboard - Backend Server
+ * Computes safety status and serves real-time & historical data
  */
 
 const express = require('express');
@@ -12,12 +12,16 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Middleware
+/* =========================================================
+   Middleware
+   ========================================================= */
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// Initialize Cosmos DB Client
+/* =========================================================
+   Cosmos DB Client
+   ========================================================= */
 const cosmosClient = new CosmosClient({
     endpoint: process.env.COSMOS_ENDPOINT,
     key: process.env.COSMOS_KEY
@@ -26,27 +30,49 @@ const cosmosClient = new CosmosClient({
 const database = cosmosClient.database(process.env.COSMOS_DATABASE);
 const container = database.container(process.env.COSMOS_CONTAINER);
 
-/**
- * API Endpoint: Get latest readings for all locations
- */
+/* =========================================================
+   Safety Status Logic (AUTHORITATIVE SOURCE)
+   ========================================================= */
+function computeSafetyStatus(avgIceThicknessCm) {
+    if (typeof avgIceThicknessCm !== 'number') return 'Unknown';
+    if (avgIceThicknessCm >= 40) return 'Safe';
+    if (avgIceThicknessCm >= 30) return 'Caution';
+    return 'Unsafe';
+}
+
+/* =========================================================
+   API: Latest Readings (with safety status)
+   ========================================================= */
 app.get('/api/latest', async (req, res) => {
     try {
-        const locations = ["dowslake", "fifthave", "nac"];
+        const locations = ['dowslake', 'fifthave', 'nac'];
         const results = [];
 
         for (const location of locations) {
-            // Let Cosmos DB find the single latest record for the location
             const querySpec = {
-                query: "SELECT TOP 1 * FROM c WHERE c.location = @location ORDER BY c.windowEndTime DESC",
+                query: `
+                    SELECT TOP 1 *
+                    FROM c
+                    WHERE c.location = @location
+                    ORDER BY c.timestamp DESC
+                `,
                 parameters: [
-                    { name: "@location", value: location }
+                    { name: '@location', value: location }
                 ]
             };
 
-            const { resources } = await container.items.query(querySpec).fetchAll();
+            const { resources } = await container.items
+                .query(querySpec)
+                .fetchAll();
 
             if (resources.length > 0) {
-                results.push(resources[0]); // Add the single latest record
+                const record = resources[0];
+
+                record.safetyStatus = computeSafetyStatus(
+                    record.avgIceThicknessCm
+                );
+
+                results.push(record);
             }
         }
 
@@ -65,29 +91,35 @@ app.get('/api/latest', async (req, res) => {
     }
 });
 
-/**
- * API Endpoint: Get historical data for a specific location
- */
+/* =========================================================
+   API: Historical Data
+   ========================================================= */
 app.get('/api/history/:location', async (req, res) => {
     try {
         const { location } = req.params;
-        const limit = parseInt(req.query.limit) || 12; // Last hour (12 * 5 min)
+        const limit = parseInt(req.query.limit, 10) || 12;
 
         const querySpec = {
-            query: "SELECT TOP @limit * FROM c WHERE c.location = @location ORDER BY c.windowEndTime DESC",
+            query: `
+                SELECT TOP @limit *
+                FROM c
+                WHERE c.location = @location
+                ORDER BY c.timestamp DESC
+            `,
             parameters: [
-                { name: "@location", value: location },
-                { name: "@limit", value: limit }
+                { name: '@location', value: location },
+                { name: '@limit', value: limit }
             ]
         };
 
-        const { resources } = await container.items.query(querySpec).fetchAll();
-        const limitedResults = resources; // The DB already limited the results
+        const { resources } = await container.items
+            .query(querySpec)
+            .fetchAll();
 
         res.json({
             success: true,
-            location: location,
-            data: limitedResults.reverse() // Oldest to newest for charting
+            location,
+            data: resources.reverse() // oldest → newest
         });
 
     } catch (error) {
@@ -99,42 +131,63 @@ app.get('/api/history/:location', async (req, res) => {
     }
 });
 
-/**
- * API Endpoint: Get overall system status
- */
+/* =========================================================
+   API: Overall System Status
+   ========================================================= */
 app.get('/api/status', async (req, res) => {
     try {
-        const locations = ["dowslake", "fifthave", "nac"];
+        const locations = ['dowslake', 'fifthave', 'nac'];
         const statuses = [];
 
         for (const location of locations) {
-            // Get the single latest record to check its status
             const querySpec = {
-                query: "SELECT TOP 1 c.location, c.safetyStatus, c.windowEndTime FROM c WHERE c.location = @location ORDER BY c.windowEndTime DESC",
+                query: `
+                    SELECT TOP 1 c.location, c.avgIceThicknessCm, c.timestamp
+                    FROM c
+                    WHERE c.location = @location
+                    ORDER BY c.timestamp DESC
+                `,
                 parameters: [
-                    { name: "@location", value: location }
+                    { name: '@location', value: location }
                 ]
             };
 
-            const { resources } = await container.items.query(querySpec).fetchAll();
+            const { resources } = await container.items
+                .query(querySpec)
+                .fetchAll();
 
             if (resources.length > 0) {
-                statuses.push(resources[0]); // Add the single latest record
+                const record = resources[0];
+                const safetyStatus = computeSafetyStatus(
+                    record.avgIceThicknessCm
+                );
+
+                statuses.push({
+                    location: record.location,
+                    safetyStatus,
+                    timestamp: record.timestamp
+                });
             }
         }
 
-        // Determine overall status
-        const overallStatus = statuses.every(s => s.safetyStatus === 'Safe') ? 'Safe' :
-            statuses.some(s => s.safetyStatus === 'Unsafe') ? 'Unsafe' : 'Caution';
+        let overallStatus = 'Unknown';
+
+        if (statuses.some(s => s.safetyStatus === 'Unsafe')) {
+            overallStatus = 'Unsafe';
+        } else if (statuses.some(s => s.safetyStatus === 'Caution')) {
+            overallStatus = 'Caution';
+        } else if (statuses.every(s => s.safetyStatus === 'Safe')) {
+            overallStatus = 'Safe';
+        }
 
         res.json({
             success: true,
-            overallStatus: overallStatus,
+            overallStatus,
             locations: statuses
         });
 
     } catch (error) {
-        console.error('Error fetching status:', error);
+        console.error('Error fetching system status:', error);
         res.status(500).json({
             success: false,
             error: 'Failed to fetch system status'
@@ -142,22 +195,21 @@ app.get('/api/status', async (req, res) => {
     }
 });
 
-/**
- * API Endpoint: Get all data (for debugging)
- */
+/* =========================================================
+   API: All Data (Debug)
+   ========================================================= */
 app.get('/api/all', async (req, res) => {
     try {
         const querySpec = {
-            query: "SELECT * FROM c"
+            query: `SELECT * FROM c`
         };
 
         const { resources } = await container.items
             .query(querySpec)
             .fetchAll();
 
-        // Sort by windowEndTime descending
-        resources.sort((a, b) =>
-            new Date(b.windowEndTime) - new Date(a.windowEndTime)
+        resources.sort(
+            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
         );
 
         res.json({
@@ -175,16 +227,13 @@ app.get('/api/all', async (req, res) => {
     }
 });
 
-/**
- * Serve the dashboard
- */
+/* =========================================================
+   Dashboard + Health
+   ========================================================= */
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-/**
- * Health check endpoint
- */
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
@@ -197,14 +246,18 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Start server
+/* =========================================================
+   Start Server
+   ========================================================= */
 app.listen(port, () => {
-    console.log(`🚀 Rideau Canal Dashboard server running on http://localhost:${port}`);
-    console.log(`📊 API endpoints available at http://localhost:${port}/api`);
-    console.log(`🏥 Health check: http://localhost:${port}/health`);
+    console.log(`🚀 Rideau Canal Dashboard running at http://localhost:${port}`);
+    console.log(`📊 API available at http://localhost:${port}/api`);
+    console.log(`🏥 Health check at http://localhost:${port}/health`);
 });
 
-// Graceful shutdown
+/* =========================================================
+   Graceful Shutdown
+   ========================================================= */
 process.on('SIGINT', () => {
     console.log('\n👋 Shutting down server...');
     process.exit(0);
