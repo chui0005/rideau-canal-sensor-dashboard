@@ -95,6 +95,7 @@ COSMOS_CONTAINER=rideaucanaldata
 ## AI use: 
   - Make changes to server code to pull in data from cosmos.
   - Change CSS
+  - Create API Documentation
 
 
   
