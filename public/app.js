@@ -60,24 +60,38 @@ async function updateDashboard() {
 /**
  * Update location cards with latest data
  */
+function formatNumber(value, decimals = 1) {
+    return typeof value === 'number'
+        ? value.toFixed(decimals)
+        : 'N/A';
+}
+
 function updateLocationCards(locations) {
     locations.forEach(location => {
         const locationKey = getLocationKey(location.location);
 
-        // Update metrics
-        document.getElementById(`ice-${locationKey}`).textContent =
-            location.avgIceThickness.toFixed(1);
-        document.getElementById(`temp-${locationKey}`).textContent =
-            location.avgSurfaceTemperature.toFixed(1);
-        document.getElementById(`snow-${locationKey}`).textContent =
-            location.maxSnowAccumulation.toFixed(1);
-
-        // Update safety status
+        // Find elements for this location
+        const iceEl = document.getElementById(`ice-${locationKey}`);
+        const tempEl = document.getElementById(`temp-${locationKey}`);
+        const snowEl = document.getElementById(`snow-${locationKey}`);
         const statusBadge = document.getElementById(`status-${locationKey}`);
-        statusBadge.textContent = location.safetyStatus;
-        statusBadge.className = `safety-badge ${location.safetyStatus.toLowerCase()}`;
+
+        // Only update if all elements for the card exist
+        if (iceEl && tempEl && snowEl && statusBadge) {
+            // Use the actual field names from Cosmos
+            iceEl.textContent = formatNumber(location.avgIceThicknessCm);
+            tempEl.textContent = formatNumber(location.avgSurfaceTemperatureC);
+            snowEl.textContent = formatNumber(location.maxSnowAccumulationCm);
+
+            // Safety status (may be missing — default to 'unknown')
+            const safetyStatus = location.safetyStatus ?? 'unknown';
+            statusBadge.textContent = safetyStatus;
+            statusBadge.className = `safety-badge ${safetyStatus.toLowerCase()}`;
+        }
     });
 }
+
+
 
 /**
  * Update overall status badge
@@ -104,80 +118,106 @@ function updateLastUpdateTime() {
 /**
  * Update charts with historical data
  */
+/**
+ * Update charts with historical data
+ */
 async function updateCharts() {
     try {
-        const locations = ["Dow's Lake", "Fifth Avenue", "NAC"];
-        const colors = {
-            "Dow's Lake": 'rgb(75, 192, 192)',
-            "Fifth Avenue": 'rgb(255, 99, 132)',
-            "NAC": 'rgb(54, 162, 235)'
-        };
+        // Canonical location configuration
+        const LOCATIONS = [
+            {
+                apiLocation: "dowslake",
+                domKey: "dows",
+                name: "Dow's Lake",
+                color: "rgb(75, 192, 192)"
+            },
+            {
+                apiLocation: "fifthave",
+                domKey: "fifth",
+                name: "Fifth Avenue",
+                color: "rgb(255, 99, 132)"
+            },
+            {
+                apiLocation: "nac",
+                domKey: "nac",
+                name: "NAC",
+                color: "rgb(54, 162, 235)"
+            }
+        ];
 
-        // Fetch historical data for all locations
+        // Fetch historical data for all locations (using API location values)
         const historicalData = await Promise.all(
-            locations.map(async (location) => {
+            LOCATIONS.map(async (loc) => {
                 const response = await fetch(
-                    `${API_BASE_URL}/api/history/${encodeURIComponent(location)}?limit=12`
+                    `${API_BASE_URL}/api/history/${encodeURIComponent(loc.apiLocation)}?limit=12`
                 );
-                const data = await response.json();
-                return { location, data: data.data };
+                const json = await response.json();
+
+                return {
+                    config: loc,
+                    data: Array.isArray(json.data) ? json.data : []
+                };
             })
         );
 
-        // Prepare chart data
-        const iceDatasets = historicalData.map(({ location, data }) => ({
-            label: location,
-            data: data.map(d => d.avgIceThickness),
-            borderColor: colors[location],
-            backgroundColor: colors[location] + '33',
-            tension: 0.4,
-            fill: false
-        }));
+        // Pick the first location that has data to build labels
+        const sourceForLabels = historicalData.find(h => h.data.length > 0);
 
-        const tempDatasets = historicalData.map(({ location, data }) => ({
-            label: location,
-            data: data.map(d => d.avgSurfaceTemperature),
-            borderColor: colors[location],
-            backgroundColor: colors[location] + '33',
-            tension: 0.4,
-            fill: false
-        }));
+        if (!sourceForLabels) {
+            console.warn('No historical data available for charts yet.');
+            return;
+        }
 
-        // Get time labels from first location's data
-        const labels = historicalData[0].data.map(d =>
-            new Date(d.windowEndTime).toLocaleTimeString('en-CA', {
+        const labels = sourceForLabels.data.map(d =>
+            new Date(d.timestamp).toLocaleTimeString('en-CA', {
                 hour: '2-digit',
                 minute: '2-digit'
             })
         );
 
-        // Update or create ice thickness chart
+        // Build datasets
+        const iceDatasets = historicalData.map(({ config, data }) => ({
+            label: config.name,
+            data: data.map(d => d.avgIceThicknessCm),
+            borderColor: config.color,
+            backgroundColor: `${config.color}33`,
+            tension: 0.4,
+            fill: false
+        }));
+
+        const tempDatasets = historicalData.map(({ config, data }) => ({
+            label: config.name,
+            data: data.map(d => d.avgSurfaceTemperatureC),
+            borderColor: config.color,
+            backgroundColor: `${config.color}33`,
+            tension: 0.4,
+            fill: false
+        }));
+
+        // --- Ice Thickness Chart ---
         if (iceChart) {
             iceChart.data.labels = labels;
             iceChart.data.datasets = iceDatasets;
             iceChart.update();
         } else {
-            const ctx = document.getElementById('iceThicknessChart').getContext('2d');
+            const ctx = document
+                .getElementById('iceThicknessChart')
+                .getContext('2d');
+
             iceChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: labels,
+                    labels,
                     datasets: iceDatasets
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: true,
                     plugins: {
-                        legend: {
-                            position: 'top',
-                        },
-                        title: {
-                            display: false
-                        }
+                        legend: { position: 'top' }
                     },
                     scales: {
                         y: {
-                            beginAtZero: false,
                             title: {
                                 display: true,
                                 text: 'Ice Thickness (cm)'
@@ -188,29 +228,27 @@ async function updateCharts() {
             });
         }
 
-        // Update or create temperature chart
+        // --- Temperature Chart ---
         if (tempChart) {
             tempChart.data.labels = labels;
             tempChart.data.datasets = tempDatasets;
             tempChart.update();
         } else {
-            const ctx = document.getElementById('temperatureChart').getContext('2d');
+            const ctx = document
+                .getElementById('temperatureChart')
+                .getContext('2d');
+
             tempChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: labels,
+                    labels,
                     datasets: tempDatasets
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: true,
                     plugins: {
-                        legend: {
-                            position: 'top',
-                        },
-                        title: {
-                            display: false
-                        }
+                        legend: { position: 'top' }
                     },
                     scales: {
                         y: {
@@ -229,16 +267,21 @@ async function updateCharts() {
     }
 }
 
+
 /**
  * Convert location name to key for DOM IDs
  */
 function getLocationKey(location) {
+    // Handles both pretty names and direct keys from the database
+    const lowerLocation = location.toLowerCase();
     const keyMap = {
-        "Dow's Lake": "dows",
-        "Fifth Avenue": "fifth",
-        "NAC": "nac"
+        "dow's lake": "dows",
+        "fifth avenue": "fifth",
+        "fifthave": "fifth", // Handle "fifthave" from the database
+        "nac": "nac",
+        "dowslake": "dows" // Handle "dowslake" from the database
     };
-    return keyMap[location] || location.toLowerCase().replace(/[^a-z]/g, '');
+    return keyMap[lowerLocation] || lowerLocation.replace(/[^a-z\s]/g, '').replace(/\s+/g, '');
 }
 
 /**

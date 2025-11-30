@@ -31,28 +31,22 @@ const container = database.container(process.env.COSMOS_CONTAINER);
  */
 app.get('/api/latest', async (req, res) => {
     try {
-        const locations = ["Dow's Lake", "Fifth Avenue", "NAC"];
+        const locations = ["dowslake", "fifthave", "nac"];
         const results = [];
 
         for (const location of locations) {
-            // Query without subquery - get all records for location, sort client-side
+            // Let Cosmos DB find the single latest record for the location
             const querySpec = {
-                query: "SELECT * FROM c WHERE c.location = @location",
+                query: "SELECT TOP 1 * FROM c WHERE c.location = @location ORDER BY c.windowEndTime DESC",
                 parameters: [
                     { name: "@location", value: location }
                 ]
             };
 
-            const { resources } = await container.items
-                .query(querySpec)
-                .fetchAll();
+            const { resources } = await container.items.query(querySpec).fetchAll();
 
             if (resources.length > 0) {
-                // Sort by windowEndTime descending and get the first one
-                resources.sort((a, b) =>
-                    new Date(b.windowEndTime) - new Date(a.windowEndTime)
-                );
-                results.push(resources[0]);
+                results.push(resources[0]); // Add the single latest record
             }
         }
 
@@ -80,22 +74,15 @@ app.get('/api/history/:location', async (req, res) => {
         const limit = parseInt(req.query.limit) || 12; // Last hour (12 * 5 min)
 
         const querySpec = {
-            query: "SELECT * FROM c WHERE c.location = @location",
+            query: "SELECT TOP @limit * FROM c WHERE c.location = @location ORDER BY c.windowEndTime DESC",
             parameters: [
-                { name: "@location", value: location }
+                { name: "@location", value: location },
+                { name: "@limit", value: limit }
             ]
         };
 
-        const { resources } = await container.items
-            .query(querySpec)
-            .fetchAll();
-
-        // Sort by windowEndTime descending and limit
-        resources.sort((a, b) =>
-            new Date(b.windowEndTime) - new Date(a.windowEndTime)
-        );
-
-        const limitedResults = resources.slice(0, limit);
+        const { resources } = await container.items.query(querySpec).fetchAll();
+        const limitedResults = resources; // The DB already limited the results
 
         res.json({
             success: true,
@@ -117,28 +104,22 @@ app.get('/api/history/:location', async (req, res) => {
  */
 app.get('/api/status', async (req, res) => {
     try {
-        const locations = ["Dow's Lake", "Fifth Avenue", "NAC"];
+        const locations = ["dowslake", "fifthave", "nac"];
         const statuses = [];
 
         for (const location of locations) {
-            // Simple query without subquery
+            // Get the single latest record to check its status
             const querySpec = {
-                query: "SELECT c.location, c.safetyStatus, c.windowEndTime FROM c WHERE c.location = @location",
+                query: "SELECT TOP 1 c.location, c.safetyStatus, c.windowEndTime FROM c WHERE c.location = @location ORDER BY c.windowEndTime DESC",
                 parameters: [
                     { name: "@location", value: location }
                 ]
             };
 
-            const { resources } = await container.items
-                .query(querySpec)
-                .fetchAll();
+            const { resources } = await container.items.query(querySpec).fetchAll();
 
             if (resources.length > 0) {
-                // Sort by windowEndTime descending and get the latest
-                resources.sort((a, b) =>
-                    new Date(b.windowEndTime) - new Date(a.windowEndTime)
-                );
-                statuses.push(resources[0]);
+                statuses.push(resources[0]); // Add the single latest record
             }
         }
 
